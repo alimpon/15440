@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <string.h>
 #include <unistd.h>
@@ -14,39 +15,19 @@
 #include <dirent.h>
 #define MAXMSGLEN 100
 
-/*void delete(struct dirtreenode* dt)
-{
-    if(dt!=NULL){
-        free(dt->name);
-        int i;
-        for(i=0; i< dt->num_subdirs; i++){
-            if (dt->subdirs[i] != NULL)
-            {
-                delete(dt->subdirs[i]);
-            }
-        }
-        free(dt->num_subdirs);
-        free(dt);
-    }
-}
-*/
 void DFS(struct dirtreenode* dt, int sessfd)
 {
-    printf("hi1\n"); 
-    int namesize = (int)strlen(dt->name);
-    printf("hi2\n"); 
+    int namesize = (int)strlen(dt->name)+1;
     send(sessfd,&namesize,sizeof(int),0);
-    printf("hi3\n"); 
     send(sessfd,dt->name,namesize,0);
-    printf("Name is: %s\n", dt->name);
     int num = dt->num_subdirs;
     send(sessfd,&num,sizeof(int),0);
-    printf("Num is: %d\n",dt->num_subdirs); 
+    //printf("Num is: %d\n",dt->num_subdirs); 
     int i;
     for(i=0; i< dt->num_subdirs; i++){
         DFS(dt->subdirs[i],sessfd);
     }
-    printf("sent all children\n");
+    //printf("sent all children\n");
 }
 
 int main(int argc, char**argv) {
@@ -73,7 +54,9 @@ int main(int argc, char**argv) {
 
 	// bind to our port
 	rv = bind(sockfd, (struct sockaddr*)&srv, sizeof(struct sockaddr));
-	if (rv<0) err(1,0);
+	int flag=1;
+    int result = setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, (char *) &flag, sizeof(int));
+    if (rv<0 || result<0) err(1,0);
 	
 	// start listening for connections
 	rv = listen(sockfd, 5);
@@ -84,14 +67,13 @@ int main(int argc, char**argv) {
 		// wait for next client, get session socket
 		sa_size = sizeof(struct sockaddr_in);
 		sessfd = accept(sockfd, (struct sockaddr *)&cli, &sa_size);
-		if (sessfd<0) err(1,0);
+		
+        if (sessfd<0) err(1,0);
 	    
-        /*int pid = fork();
-        if (pid < 0) {
-            perror("ERROR on fork");
-            exit(1);
-        }else if (pid == 0) {*/
-            // get messages and send replies to this client, until it goes away
+        rv = fork();
+        if(rv!=0) continue;
+        while(1) {
+            //printf("Entered loop\n");
             char bufsize[sizeof(int)]; 
             while ( (rv=recv(sessfd, bufsize, 4, 0)) > 0) {
                 //printf("RVsize is: %d\n",rv);
@@ -102,10 +84,10 @@ int main(int argc, char**argv) {
             //printf("Out of size loop\n");
             int size = *((int  *)bufsize); 
             //printf("bufsize is %d\n",size);
-            printf("hiagain\n");
+            //printf("hiagain\n");
             char* msg = malloc(size);
             char* buf = malloc(size);
-            printf("hiagain2\n");
+            //printf("hiagain2\n");
             int count=0;
             while ( (rv=recv(sessfd, buf, size, 0)) > 0) {
                 //printf("RV is: %d\n",rv);
@@ -123,7 +105,7 @@ int main(int argc, char**argv) {
             switch (type) {
                 case 1:
                     {
-                        printf("It is open.\n");
+                        //fprintf(stderr,"It is open.\n");
                         int flags = *((int *) msg+1);
                         int size = *((int *) msg+2);
                         mode_t mode;
@@ -134,15 +116,21 @@ int main(int argc, char**argv) {
                         memcpy(path,(char*)msg+3*sizeof(int)+sizeof(mode_t),size);
                         path[size] = '\0';
 
-                        //printf("Flags is: %d\n",flags);
-                       // printf("Mode is: %d\n",mode);
-                        //printf("Size is: %d\n",size);
-                        //printf("Path is: %s\n\n",path);
-
+                        //fprintf(stderr,"Flags is: %d\n",flags);
+                        //fprintf(stderr,"Mode is: %d\n",mode);
+                        //fprintf(stderr,"Size is: %d\n",size);
+                        //fprintf(stderr,"Path is: %s\n\n",path);
+                        
+                        errno=0;
                         int fd = open(path, flags, mode);
                         int error = errno;
                         
-                        //printf("Open done, fd is: %d, errno is: %d\n",fd,error);
+                        //fprintf(stderr,"Open done, fd is: %d, errno is: %d\n",fd,error);
+                        
+                        char retsize[sizeof(int)];
+                        size = 2*sizeof(int);
+                        memcpy(retsize,&size,sizeof(int));
+                        send(sessfd, retsize,sizeof(int),0);
                         
                         char answer[2*sizeof(int)];
                         memcpy(answer, &fd, sizeof(int));
@@ -152,15 +140,20 @@ int main(int argc, char**argv) {
                     
                 case 2:
                     {
-                        printf("It is close.\n");
+                        //fprintf(stderr,"It is close.\n");
                         int fd = *((int *) msg+1);
-                        //printf("Closing fd: %d\n", fd);
+                        //fprintf(stderr,"Closing fd: %d\n", fd);
+                        errno=0;
                         int err = close(fd);
-                        //printf("Closed\n");
                         int error = errno;
                         
-                        //printf("Closed done, error is: %d, errno is: %d\n",err,error);
-                        
+                        //fprintf(stderr,"Closed done, error is: %d, errno is: %d\n",err,error);
+                       
+                        char retsize[sizeof(int)];
+                        int size = 2*sizeof(int);
+                        memcpy(retsize,&size,sizeof(int));
+                        send(sessfd, retsize,sizeof(int),0);
+
                         char answer[2*sizeof(int)];
                         memcpy(answer, &err, sizeof(int));
                         memcpy(answer+sizeof(int), &error, sizeof(int));
@@ -169,7 +162,7 @@ int main(int argc, char**argv) {
      
                 case 3:
                     {
-                        printf("It is write.\n");
+                        //fprintf(stderr,"It is write.\n");
                         int fd = *((int *) msg+1);
                         size_t count;
                         memcpy(&count,(char*)msg+2*sizeof(int),sizeof(size_t));
@@ -179,14 +172,19 @@ int main(int argc, char**argv) {
                         //includes null char since sent over null char
                         memcpy(buffer,(char*)msg+2*sizeof(int)+sizeof(size_t),count);
                         
-                        //printf("fd is: %d\n",fd);
-                        //printf("count is: %zu\n",count);
-                        //printf("buffer is: %s\n\n",buffer);
-
+                        //fprintf(stderr,"fd is: %d\n",fd);
+                        //fprintf(stderr,"count is: %zu\n",count);
+                        //fprintf(stderr,"buffer is: %s\n\n",buffer);
+                        errno=0;
                         ssize_t num_bytes = write(fd, buffer, count);
                         int error = errno;
                         
-                        //printf("Write done, num_bytes is: %d, errno is: %d\n",num_bytes,error);
+                        //fprintf(stderr,"Write done, num_bytes is: %zd, errno is: %d\n",num_bytes,error);
+                        
+                        char retsize[sizeof(int)];
+                        int size = sizeof(int)+sizeof(ssize_t);
+                        memcpy(retsize,&size,sizeof(int));
+                        send(sessfd, retsize,sizeof(int),0);
                         
                         char answer[sizeof(int)+sizeof(ssize_t)];
                         memcpy(answer, &error, sizeof(int));
@@ -198,7 +196,7 @@ int main(int argc, char**argv) {
 
                 case 4:
                     {
-                        printf("It is read.\n");
+                        //fprintf(stderr,"It is read.\n");
                         int fd = *((int *) msg+1);
                         size_t count;
                         memcpy(&count,(char*)msg+2*sizeof(int),sizeof(size_t));
@@ -207,23 +205,35 @@ int main(int argc, char**argv) {
                         
                         //includes null char since sent over null char
                         
-                        printf("fd is: %d\n",fd);
-                        printf("count is: %zu\n",count);
-
+                        //fprintf(stderr,"fd is: %d\n",fd);
+                        //printf("count is: %zu\n",count);
+                        errno=0;
                         ssize_t num_bytes = read(fd, buffer, count);
                         int error = errno;
                         
-                        printf("Read done, num_bytes is: %zd, errno is: %d\n",num_bytes,error);
-                        printf("Buffer is: %s\n", buffer);
+                        if(num_bytes==-1){
+                            num_bytes = 0;
+                        }
+
+                        //fprintf(stderr,"Read done, num_bytes is: %zd, errno is: %d\n",num_bytes,error);
+                        //fprintf(stderr,"Buffer is: %s\n", buffer);
+                        
+                        char retsize[sizeof(int)];
+                        int size = sizeof(int)+sizeof(ssize_t)+num_bytes;
+                        memcpy(retsize,&size,sizeof(int));
+                        send(sessfd, retsize,sizeof(int),0);
+                        
                         char answer[sizeof(int)+sizeof(ssize_t)+num_bytes];
                         memcpy(answer, &error, sizeof(int));
                         memcpy(answer+sizeof(int), &num_bytes, sizeof(ssize_t));
                         memcpy(answer+sizeof(int)+sizeof(ssize_t), buffer, num_bytes);
                         send(sessfd, answer, sizeof(int)+sizeof(ssize_t)+num_bytes, 0);
+                        //fprintf(stderr,"Supposed to send %zd\n",sizeof(int)+sizeof(ssize_t)+num_bytes);
+                        //fprintf(stderr,"Actual sent %d\n",sent);
                     } break;
                 case 5:
                     {
-                        printf("It is lseek.\n");
+                        //printf("It is lseek.\n");
                         int fd = *((int *) msg+1);
                         int whence = *((int *) msg+2);
                         off_t offset;
@@ -232,14 +242,15 @@ int main(int argc, char**argv) {
                         memcpy(&offset,(char*)msg+3*sizeof(int),sizeof(off_t));
                         
                         //printf("fd is: %d\n",fd);
-                        //printf("count is: %zu\n",count);
-                        //printf("buffer is: %s\n\n",buffer);
-
+                        errno=0;
                         off_t result = lseek(fd, offset, whence);
                         int error = errno;
-                        
-                        //printf("Write done, num_bytes is: %d, errno is: %d\n",num_bytes,error);
-                        
+
+                        char retsize[sizeof(int)];
+                        int size = sizeof(int)+sizeof(off_t);
+                        memcpy(retsize,&size,sizeof(int));
+                        send(sessfd, retsize,sizeof(int),0);
+
                         char answer[sizeof(int)+sizeof(off_t)];
                         memcpy(answer, &error, sizeof(int));
                         memcpy(answer+sizeof(int), &result, sizeof(off_t));
@@ -248,22 +259,24 @@ int main(int argc, char**argv) {
                     } break;
                 case 6:
                     {
-                        printf("It is stat.\n");
+                        //printf("It is stat.\n");
                         int pathsize = *((int *) msg+1);
                         char path[pathsize+1];
                         memcpy(path,(char*)msg+2*sizeof(int), pathsize);
                         path[pathsize] = '\0';
                         struct stat *buf = malloc(sizeof(struct stat));
-                        //printf("Flags is: %d\n",flags);
-                        //printf("Mode is: %d\n",mode);
-                        //printf("Size is: %d\n",size);
                         //printf("Path is: %s\n\n",path);
-
+                        errno=0;
                         int result = stat(path, buf);
                         int error = errno;
                         
-                        //printf("Open done, fd is: %d, errno is: %d\n",fd,error);
-                        
+                        //printf("stat done, errno is: %d\n",error);
+
+                        char retsize[sizeof(int)];
+                        int size = 2*sizeof(int)+sizeof(struct stat);
+                        memcpy(retsize,&size,sizeof(int));
+                        send(sessfd, retsize,sizeof(int),0);
+
                         char answer[2*sizeof(int)+sizeof(struct stat)];
                         memcpy(answer, &error, sizeof(int));
                         memcpy(answer+sizeof(int), &result, sizeof(int));
@@ -273,22 +286,27 @@ int main(int argc, char**argv) {
                     } break;
                 case 7:
                     {
-                        printf("It is xstat.\n");
+                        //printf("It is xstat.\n");
                         int version = *((int *) msg+1);
                         int pathsize = *((int *) msg+2);
                         char path[pathsize+1];
                         memcpy(path,(char*)msg+3*sizeof(int), pathsize);
                         path[pathsize] = '\0';
                         struct stat *buf = malloc(sizeof(struct stat));
-                        printf("Version is: %d\n",version);
-                        printf("Size is: %d\n",pathsize);
-                        printf("Path is: %s\n\n",path);
-
-                        int result = stat(path, buf);
+                        //printf("Version is: %d\n",version);
+                        //printf("Size is: %d\n",pathsize);
+                        //printf("Path is: %s\n\n",path);
+                        errno=0;
+                        int result = __xstat(version, path, buf);
                         int error = errno;
                          
-                        printf("xstat done, result is: %d, errno is: %d\n",result,error);
-                        
+                        //printf("xstat done, result is: %d, errno is: %d\n",result,error);
+
+                        char retsize[sizeof(int)];
+                        int size = 2*sizeof(int)+sizeof(struct stat);
+                        memcpy(retsize,&size,sizeof(int));
+                        send(sessfd, retsize,sizeof(int),0);
+
                         char answer[2*sizeof(int)+sizeof(struct stat)];
                         memcpy(answer, &error, sizeof(int));
                         memcpy(answer+sizeof(int), &result, sizeof(int));
@@ -298,31 +316,36 @@ int main(int argc, char**argv) {
                     } break;
                 case 8:
                     {
-                        printf("It is unlink.\n");
+                        //printf("It is unlink.\n");
                         int pathsize = *((int *) msg+1);
                         char path[pathsize+1];
                         memcpy(path,(char*)msg+2*sizeof(int), pathsize);
                         path[pathsize] = '\0';
 
-                        printf("Size is: %d\n",pathsize);
-                        printf("Path is: %s\n\n",path);
-
+                        //printf("Size is: %d\n",pathsize);
+                        //printf("Path is: %s\n\n",path);
+                        errno=0;
                         int result = unlink(path);
                         int error = errno;
                         
-                        printf("Unlink done, result is: %d, errno is: %d\n",result,error);
-                        
+                        //printf("Unlink done, result is: %d, errno is: %d\n",result,error);
+
+                        char retsize[sizeof(int)];
+                        int size = 2*sizeof(int);
+                        memcpy(retsize,&size,sizeof(int));
+                        send(sessfd, retsize,sizeof(int),0);
+
                         char answer[2*sizeof(int)];
                         memcpy(answer, &error, sizeof(int));
                         memcpy(answer+sizeof(int), &result, sizeof(int));
 
-                        printf("Sending results back to client\n");
+                        //printf("Sending results back to client\n");
 
                         send(sessfd, answer, 2*sizeof(int), 0);
                     } break;
                 case 9:
                     {
-                        printf("It is Getdirentries.\n");
+                        //printf("It is Getdirentries.\n");
                         int fd = *((int *) msg+1);
                         size_t nbytes;
                         memcpy(&nbytes,(char*)msg+2*sizeof(int), sizeof(size_t));
@@ -330,14 +353,21 @@ int main(int argc, char**argv) {
                         memcpy(&basep,(char*)msg+2*sizeof(int)+sizeof(size_t), sizeof(off_t));
                         
                         char buf[nbytes];
-
-                      //  printf("fd is: %d\n",fd);
-                        //printf("Mode is: %d\n",mode);
-
+                        errno=0;
                         ssize_t num_bytes = getdirentries(fd,buf,nbytes,&basep);
                         int error = errno;
-                      //  printf("getdirentries done, num_bytes is: %zd, errno is: %d\n",num_bytes,error);
-                      //  printf("buf is: %s\n\n",buf);
+                        
+                        if(num_bytes==-1){
+                            num_bytes=0;
+                        }
+
+                        printf("getdirentries done, num_bytes is: %zd, errno is: %d\n",num_bytes,error);
+                         
+                        char retsize[sizeof(int)];
+                        int size = sizeof(int)+sizeof(ssize_t)+num_bytes;
+                        memcpy(retsize,&size,sizeof(int));
+                        send(sessfd, retsize,sizeof(int),0);
+
                         char answer[sizeof(int)+sizeof(ssize_t)+num_bytes];
                         memcpy(answer, &error, sizeof(int));
                         memcpy(answer+sizeof(int), &num_bytes, sizeof(ssize_t));
@@ -346,61 +376,38 @@ int main(int argc, char**argv) {
                     } break;
                 case 10:
                     {
-                        printf("It is getdirtree.\n");
+                        //printf("It is getdirtree.\n");
                         int pathsize = *((int *) msg+1);
                         char path[pathsize+1];
                         memcpy(path,(char*)msg+2*sizeof(int), pathsize);
                         path[pathsize] = '\0';
 
-                        printf("Size is: %d\n",pathsize);
-                        printf("Path is: %s\n\n",path);
-                        
+                        //printf("Size is: %d\n",pathsize);
+                        //printf("Path is: %s\n\n",path);
+                        errno=0;
                         struct dirtreenode* tree = getdirtree(path);
                         int error = errno;
                         
-                        printf("getdirtree done, errno is: %d\n",error);
+                        //printf("getdirtree done, errno is: %d\n",error);
                         
-                        printf("Sending error back to client\n");
+                        //printf("Sending error back to client\n");
                         send(sessfd,&error,sizeof(int),0);
                         DFS(tree, sessfd);
-                        printf("Done with all DFS\n");
+                        freedirtree(tree);
+                        //printf("Done with all DFS\n");
                     } break;
-                case 11:
+                default:
                     {
-                        /*printf("It is freedirtree.\n");
-                        int pathsize = *((int *) msg+1);
-                        char path[pathsize+1];
-                        memcpy(path,(char*)msg+2*sizeof(int), pathsize);
-                        path[pathsize] = '\0';
-
-                        printf("Size is: %d\n",pathsize);
-                        printf("Path is: %s\n\n",path);
-                        
-                        struct dirtreenode* tree = getdirtree(path);
-                        int error = errno;
-                        
-                        printf("getdirtree done, result is: %d, errno is: %d\n",result,error);
-                        
-                        char answer[2*sizeof(int)];
-                        memcpy(answer, &error, sizeof(int));
-                        memcpy(answer+sizeof(int), &result, sizeof(int));
-
-                        printf("Sending results back to client\n");
-
-                        send(sessfd, answer, 2*sizeof(int), 0);*/
-                    } break;
+                      close(sessfd);
+                      exit(0);
+                    }
             }
-            printf("HI reached end\n");
+            //printf("HI reached end\n");
             free(msg); 
-            printf("highfive\n");
+            //printf("highfive\n");
             // either client closed connection, or error
             if (rv<0) err(1,0);
-            close(sessfd);
-           /* continue;
-        }else{
-            close(sessfd);
-            continue;
-        }*/
+        }
     }
     // close socket
     close(sockfd);
